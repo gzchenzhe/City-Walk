@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>城市染色 Demo</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="map-stage" aria-label="城市地图">
+        <div id="map"></div>
+        <div class="map-vignette" aria-hidden="true"></div>
+
+        <div class="brand-strip" aria-label="当前 Demo">
+          <div class="brand-mark">CW</div>
+          <div>
+            <h1>城市染色</h1>
+            <p id="statusText">本地赛季已准备</p>
+          </div>
+        </div>
+
+        <aside class="control-panel" aria-label="操作面板">
+          <div class="segmented" role="tablist" aria-label="地图图层">
+            <button class="segment is-active" type="button" data-layer-mode="territory" role="tab">
+              领地
+            </button>
+            <button class="segment" type="button" data-layer-mode="footprint" role="tab">
+              足迹
+            </button>
+          </div>
+
+          <div class="stats-grid" aria-label="统计">
+            <div class="metric">
+              <span>占领</span>
+              <strong id="ownedCount">0</strong>
+            </div>
+            <div class="metric">
+              <span>足迹</span>
+              <strong id="footprintCount">0</strong>
+            </div>
+            <div class="metric">
+              <span>夺回</span>
+              <strong id="captureCount">0</strong>
+            </div>
+            <div class="metric">
+              <span>面积</span>
+              <strong id="areaCount">0 m²</strong>
+            </div>
+          </div>
+
+          <div class="toolbar" aria-label="主要操作">
+            <button class="tool-button primary" id="gpsButton" type="button" title="GPS 定位">
+              <i data-lucide="locate-fixed"></i>
+              <span>GPS</span>
+            </button>
+            <button class="tool-button" id="claimCenterButton" type="button" title="占领地图中心">
+              <i data-lucide="crosshair"></i>
+              <span>中心</span>
+            </button>
+            <button class="tool-button" id="autoButton" type="button" title="自动模拟行走">
+              <i data-lucide="play"></i>
+              <span>模拟</span>
+            </button>
+          </div>
+
+          <div class="move-pad" aria-label="方向移动">
+            <button class="icon-button" type="button" data-bearing="315" title="西北">
+              <i data-lucide="corner-left-up"></i>
+            </button>
+            <button class="icon-button" type="button" data-bearing="0" title="向北">
+              <i data-lucide="arrow-up"></i>
+            </button>
+            <button class="icon-button" type="button" data-bearing="45" title="东北">
+              <i data-lucide="corner-right-up"></i>
+            </button>
+            <button class="icon-button" type="button" data-bearing="270" title="向西">
+              <i data-lucide="arrow-left"></i>
+            </button>
+            <button class="icon-button center-dot" id="centerOnPlayerButton" type="button" title="回到玩家">
+              <i data-lucide="circle-dot"></i>
+            </button>
+            <button class="icon-button" type="button" data-bearing="90" title="向东">
+              <i data-lucide="arrow-right"></i>
+            </button>
+            <button class="icon-button" type="button" data-bearing="225" title="西南">
+              <i data-lucide="corner-left-down"></i>
+            </button>
+            <button class="icon-button" type="button" data-bearing="180" title="向南">
+              <i data-lucide="arrow-down"></i>
+            </button>
+            <button class="icon-button" type="button" data-bearing="135" title="东南">
+              <i data-lucide="corner-right-down"></i>
+            </button>
+          </div>
+
+          <div class="settings-row" aria-label="格子尺寸">
+            <span>格子</span>
+            <div class="size-options">
+              <button class="size-chip" type="button" data-cell-size="50">50m</button>
+              <button class="size-chip is-active" type="button" data-cell-size="80">80m</button>
+              <button class="size-chip" type="button" data-cell-size="120">120m</button>
+            </div>
+          </div>
+
+          <div class="legend" aria-label="图例">
+            <span><b class="swatch mine"></b>我</span>
+            <span><b class="swatch rival-a"></b>红队</span>
+            <span><b class="swatch rival-b"></b>金队</span>
+            <span><b class="swatch rival-c"></b>蓝队</span>
+          </div>
+
+          <div class="toolbar secondary-actions" aria-label="数据操作">
+            <button class="tool-button" id="seedButton" type="button" title="生成本地对手领地">
+              <i data-lucide="sparkles"></i>
+              <span>对手</span>
+            </button>
+            <button class="tool-button" id="exportButton" type="button" title="导出本地存档">
+              <i data-lucide="download"></i>
+              <span>导出</span>
+            </button>
+            <button class="tool-button danger" id="resetButton" type="button" title="清空本地存档">
+              <i data-lucide="trash-2"></i>
+              <span>重置</span>
+            </button>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
