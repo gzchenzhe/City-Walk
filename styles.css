@@ -126,6 +126,56 @@ button {
   backdrop-filter: blur(14px);
 }
 
+.control-panel.is-collapsed {
+  width: auto;
+  min-width: 0;
+  padding: 8px;
+}
+
+.control-panel.is-collapsed > :not(.panel-toggle) {
+  display: none;
+}
+
+.panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: end;
+  gap: 8px;
+  min-width: 92px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 760;
+  transition:
+    transform 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.panel-toggle:hover {
+  transform: translateY(-1px);
+  border-color: rgba(20, 168, 121, 0.45);
+  color: var(--ink);
+}
+
+.panel-toggle svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2.2;
+}
+
+.control-panel.is-collapsed .panel-toggle {
+  min-width: 104px;
+  color: #ffffff;
+  border-color: transparent;
+  background: var(--mine);
+}
+
 .segmented {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -179,6 +229,32 @@ button {
   margin-top: 4px;
   font-size: clamp(15px, 2.2vw, 20px);
   line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.location-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.location-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.location-card strong {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -381,6 +457,13 @@ button {
     padding: 12px;
   }
 
+  .control-panel.is-collapsed {
+    width: auto;
+    max-height: none;
+    overflow: visible;
+    padding: 8px;
+  }
+
   .stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -406,6 +489,10 @@ button {
   }
 
   .tool-button {
+    min-height: 40px;
+  }
+
+  .panel-toggle {
     min-height: 40px;
   }
 

@@ -21,7 +21,18 @@
           </div>
         </div>
 
-        <aside class="control-panel" aria-label="操作面板">
+        <aside class="control-panel" id="controlPanel" aria-label="操作面板">
+          <button
+            class="panel-toggle"
+            id="panelToggleButton"
+            type="button"
+            aria-expanded="true"
+            title="收起操作面板"
+          >
+            <i data-lucide="panel-bottom-close"></i>
+            <span>收起</span>
+          </button>
+
           <div class="segmented" role="tablist" aria-label="地图图层">
             <button class="segment is-active" type="button" data-layer-mode="territory" role="tab">
               领地
@@ -50,14 +61,19 @@
             </div>
           </div>
 
+          <div class="location-card" aria-live="polite">
+            <span>定位</span>
+            <strong id="locationText">未启用 GPS</strong>
+          </div>
+
           <div class="toolbar" aria-label="主要操作">
-            <button class="tool-button primary" id="gpsButton" type="button" title="GPS 定位">
+            <button class="tool-button primary" id="gpsButton" type="button" title="定位到真实设备位置，误差 100m 以内才计入格子">
               <i data-lucide="locate-fixed"></i>
               <span>GPS</span>
             </button>
-            <button class="tool-button" id="claimCenterButton" type="button" title="占领地图中心">
+            <button class="tool-button" id="claimCenterButton" type="button" title="把当前地图画面中心染成自己的颜色">
               <i data-lucide="crosshair"></i>
-              <span>中心</span>
+              <span>染中心</span>
             </button>
             <button class="tool-button" id="autoButton" type="button" title="自动模拟行走">
               <i data-lucide="play"></i>
@@ -120,7 +136,7 @@
               <i data-lucide="download"></i>
               <span>导出</span>
             </button>
-            <button class="tool-button danger" id="resetButton" type="button" title="清空本地存档">
+            <button class="tool-button danger" id="resetButton" type="button" title="一键清空所有格子、路线和统计">
               <i data-lucide="trash-2"></i>
               <span>重置</span>
             </button>

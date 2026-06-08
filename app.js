@@ -4,6 +4,12 @@ const STORAGE_KEY = "city-walk-turf-demo-v1";
 const EARTH_RADIUS = 6378137;
 const MAX_LAT = 85.05112878;
 const DEFAULT_CENTER = [31.2304, 121.4737];
+const GPS_TARGET_ACCURACY = 100;
+const GPS_OPTIONS = {
+  enableHighAccuracy: true,
+  maximumAge: 0,
+  timeout: 20000,
+};
 const OWNER_COLORS = {
   me: "#20a879",
   rivalA: "#eb4967",
@@ -22,6 +28,9 @@ let watchId = null;
 let autoTimer = null;
 let autoBearing = 55;
 let lastPoint = null;
+let gpsSessionId = 0;
+let lastReverseGeocodeAt = 0;
+let reverseGeocodeController = null;
 
 const state = loadState();
 
@@ -31,6 +40,9 @@ const els = {
   footprintCount: document.getElementById("footprintCount"),
   captureCount: document.getElementById("captureCount"),
   areaCount: document.getElementById("areaCount"),
+  locationText: document.getElementById("locationText"),
+  controlPanel: document.getElementById("controlPanel"),
+  panelToggleButton: document.getElementById("panelToggleButton"),
   gpsButton: document.getElementById("gpsButton"),
   autoButton: document.getElementById("autoButton"),
   claimCenterButton: document.getElementById("claimCenterButton"),
@@ -60,16 +72,11 @@ function init() {
 
   bindEvents();
   syncCellSizeButtons();
+  syncPanelState();
   createIcons();
 
   const start = state.lastPoint || { lat: state.map.center[0], lng: state.map.center[1] };
   setPlayerPosition(start, { pan: false, record: false });
-  if (Object.keys(state.footprints).length === 0) {
-    claimRoute(start, start, "manual");
-  }
-  if (state.path.length === 0) {
-    appendPath(start, "manual");
-  }
 
   redraw();
   updateStats();
@@ -113,8 +120,9 @@ function bindEvents() {
   });
 
   els.gpsButton.addEventListener("click", toggleGps);
+  els.panelToggleButton.addEventListener("click", togglePanel);
   els.autoButton.addEventListener("click", toggleAutoWalk);
-  els.claimCenterButton.addEventListener("click", () => movePlayer(map.getCenter(), "manual"));
+  els.claimCenterButton.addEventListener("click", claimMapCenter);
   els.centerOnPlayerButton.addEventListener("click", centerOnPlayer);
   els.seedButton.addEventListener("click", seedRivals);
   els.exportButton.addEventListener("click", exportSave);
@@ -129,6 +137,25 @@ function createIcons() {
   }
 }
 
+function syncPanelState() {
+  els.controlPanel.classList.toggle("is-collapsed", state.panelCollapsed);
+  els.panelToggleButton.setAttribute("aria-expanded", String(!state.panelCollapsed));
+  els.panelToggleButton.setAttribute(
+    "title",
+    state.panelCollapsed ? "打开操作面板" : "收起操作面板",
+  );
+  els.panelToggleButton.innerHTML = state.panelCollapsed
+    ? '<i data-lucide="sliders-horizontal"></i><span>面板</span>'
+    : '<i data-lucide="panel-bottom-close"></i><span>收起</span>';
+  createIcons();
+}
+
+function togglePanel() {
+  state.panelCollapsed = !state.panelCollapsed;
+  syncPanelState();
+  saveState();
+}
+
 function loadState() {
   const fallback = {
     version: 1,
@@ -140,6 +167,7 @@ function loadState() {
     path: [],
     stats: { captures: 0 },
     lastPoint: null,
+    panelCollapsed: false,
   };
 
   try {
@@ -166,6 +194,10 @@ function saveState() {
 
 function setStatus(text) {
   els.status.textContent = text;
+}
+
+function setLocationText(text) {
+  els.locationText.textContent = text;
 }
 
 function clampLat(lat) {
@@ -343,13 +375,23 @@ function setPlayerPosition(latlng, options = {}) {
 
 function movePlayer(latlng, source) {
   const target = { lat: Number(latlng.lat), lng: Number(latlng.lng) };
-  const from = lastPoint || target;
+  const from = hasVisited() ? lastPoint || target : target;
   claimRoute(from, target, source);
   setPlayerPosition(target, { pan: true, source });
   saveState();
   redraw();
   updateStats();
-  setStatus(source === "gps" ? "GPS 轨迹已计入" : "模拟轨迹已计入");
+  setStatus(statusForSource(source));
+}
+
+function hasVisited() {
+  return state.path.length > 0 || Object.keys(state.footprints).length > 0;
+}
+
+function statusForSource(source) {
+  if (source === "gps") return "GPS 真实定位已计入";
+  if (source === "center") return "已染当前地图中心";
+  return "模拟轨迹已计入";
 }
 
 function claimRoute(from, to, source) {
@@ -437,51 +479,146 @@ function toggleAutoWalk() {
 
 function toggleGps() {
   if (watchId !== null) {
-    navigator.geolocation.clearWatch(watchId);
-    watchId = null;
-    els.gpsButton.classList.remove("is-active");
-    els.gpsButton.querySelector("span").textContent = "GPS";
-    setStatus("GPS 已停止");
+    stopGpsTracking("GPS 已停止");
     return;
   }
 
   if (!navigator.geolocation) {
     setStatus("当前浏览器不支持 GPS");
+    setLocationText("当前浏览器不支持 GPS");
     return;
   }
 
-  watchId = navigator.geolocation.watchPosition(
-    (position) => {
-      const { latitude, longitude, accuracy, speed } = position.coords;
-      if (accuracy && accuracy > 90) {
-        setStatus(`GPS 精度 ${Math.round(accuracy)}m，未计入`);
-        return;
-      }
-      if (speed && speed > 9) {
-        setStatus("移动速度过高，未计入");
-        return;
-      }
-      movePlayer({ lat: latitude, lng: longitude }, "gps");
-    },
-    () => {
-      setStatus("GPS 无法启用");
-      if (watchId !== null) {
-        navigator.geolocation.clearWatch(watchId);
-        watchId = null;
-      }
-      els.gpsButton.classList.remove("is-active");
-      els.gpsButton.querySelector("span").textContent = "GPS";
-    },
-    {
-      enableHighAccuracy: true,
-      maximumAge: 2500,
-      timeout: 12000,
-    },
-  );
-
+  const sessionId = gpsSessionId + 1;
+  gpsSessionId = sessionId;
   els.gpsButton.classList.add("is-active");
   els.gpsButton.querySelector("span").textContent = "停止";
-  setStatus("GPS 监听中");
+  setStatus("正在获取高精度 GPS");
+  setLocationText(`正在获取设备真实位置，目标误差 ${GPS_TARGET_ACCURACY}m 以内`);
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => handleGpsPosition(position, sessionId, true),
+    (error) => handleGpsError(error, sessionId),
+    GPS_OPTIONS,
+  );
+
+  watchId = navigator.geolocation.watchPosition(
+    (position) => handleGpsPosition(position, sessionId, false),
+    (error) => handleGpsError(error, sessionId),
+    GPS_OPTIONS,
+  );
+}
+
+function stopGpsTracking(message) {
+  gpsSessionId += 1;
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+  if (reverseGeocodeController) {
+    reverseGeocodeController.abort();
+    reverseGeocodeController = null;
+  }
+  els.gpsButton.classList.remove("is-active");
+  els.gpsButton.querySelector("span").textContent = "GPS";
+  setStatus(message);
+  setLocationText(message);
+}
+
+function handleGpsPosition(position, sessionId, isInitialFix) {
+  if (sessionId !== gpsSessionId || watchId === null) return;
+
+  const { latitude, longitude, accuracy, speed } = position.coords;
+  const point = { lat: latitude, lng: longitude };
+  const readableAccuracy = accuracy ? Math.round(accuracy) : "未知";
+  updateGpsLocationText(point, accuracy);
+
+  if (speed && speed > 9) {
+    setPlayerPosition(point, { pan: isInitialFix, record: false });
+    setStatus("移动速度过高，GPS 未计入");
+    return;
+  }
+
+  if (!accuracy || accuracy > GPS_TARGET_ACCURACY) {
+    setPlayerPosition(point, { pan: isInitialFix, record: false });
+    setStatus(`已定位，误差 ${readableAccuracy}m，继续等待 100m 内精度`);
+    return;
+  }
+
+  movePlayer(point, "gps");
+  lookupAddress(point, accuracy);
+}
+
+function handleGpsError(error, sessionId) {
+  if (sessionId !== gpsSessionId) return;
+
+  const messageByCode = {
+    1: "GPS 未授权，请允许浏览器定位",
+    2: "暂时无法获取设备位置",
+    3: "GPS 定位超时，请到开阔处重试",
+  };
+  const message = messageByCode[error.code] || "GPS 无法启用";
+  setStatus(message);
+  setLocationText(message);
+}
+
+function updateGpsLocationText(point, accuracy) {
+  const precision = accuracy ? ` · 误差约 ${Math.round(accuracy)}m` : "";
+  setLocationText(`真实设备定位 · ${formatCoordinate(point.lat)}, ${formatCoordinate(point.lng)}${precision}`);
+}
+
+async function lookupAddress(point, accuracy) {
+  const now = Date.now();
+  if (now - lastReverseGeocodeAt < 15000) return;
+
+  lastReverseGeocodeAt = now;
+  if (reverseGeocodeController) {
+    reverseGeocodeController.abort();
+  }
+
+  reverseGeocodeController = new AbortController();
+  const url = new URL("https://nominatim.openstreetmap.org/reverse");
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("lat", String(point.lat));
+  url.searchParams.set("lon", String(point.lng));
+  url.searchParams.set("zoom", "18");
+  url.searchParams.set("accept-language", "zh-CN,zh,en");
+
+  try {
+    const response = await fetch(url, {
+      signal: reverseGeocodeController.signal,
+      headers: {
+        "Accept": "application/json",
+      },
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    const address = data.display_name || buildAddress(data.address);
+    if (!address) return;
+    const precision = accuracy ? ` · 误差约 ${Math.round(accuracy)}m` : "";
+    setLocationText(`真实设备定位 · ${address}${precision}`);
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      updateGpsLocationText(point, accuracy);
+    }
+  }
+}
+
+function buildAddress(address = {}) {
+  return [
+    address.city || address.town || address.village || address.county,
+    address.suburb || address.neighbourhood,
+    address.road,
+    address.house_number,
+  ].filter(Boolean).join(" ");
+}
+
+function formatCoordinate(value) {
+  return Number(value).toFixed(6);
+}
+
+function claimMapCenter() {
+  movePlayer(map.getCenter(), "center");
 }
 
 function centerOnPlayer() {
@@ -607,13 +744,26 @@ function exportSave() {
 }
 
 function resetSave() {
-  const ok = window.confirm("清空本地足迹、领地和模拟对手？");
-  if (!ok) return;
-
   if (autoTimer) toggleAutoWalk();
-  if (watchId !== null) toggleGps();
-  localStorage.removeItem(STORAGE_KEY);
-  window.location.reload();
+  if (watchId !== null) stopGpsTracking("GPS 已停止");
+
+  state.territory = {};
+  state.footprints = {};
+  state.path = [];
+  state.stats.captures = 0;
+  state.lastPoint = null;
+  lastPoint = null;
+
+  if (playerMarker) {
+    map.removeLayer(playerMarker);
+    playerMarker = null;
+  }
+
+  saveState();
+  redraw();
+  updateStats();
+  setLocationText("未启用 GPS");
+  setStatus("已清空全部格子和路线");
 }
 
 function compactNumber(value) {
