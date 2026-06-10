@@ -56,6 +56,62 @@ button {
   background: #dfe7e2;
 }
 
+.map-config-card {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: min(420px, calc(100vw - 36px));
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  transform: translate(-50%, -50%);
+}
+
+.map-config-card h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.map-config-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.map-config-card label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.map-config-card input {
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.map-config-card button {
+  min-height: 42px;
+  border-radius: 8px;
+  background: var(--mine);
+  color: #ffffff;
+  cursor: pointer;
+  font-weight: 780;
+}
+
 .map-vignette {
   position: absolute;
   inset: 0;

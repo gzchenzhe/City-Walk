@@ -1,6 +1,7 @@
 "use strict";
 
-const STORAGE_KEY = "city-walk-turf-demo-v1";
+const STORAGE_KEY = "city-walk-turf-demo-v3-leaflet-hex";
+const LEGACY_STORAGE_KEYS = ["city-walk-turf-demo-v2-amap-hex"];
 const EARTH_RADIUS = 6378137;
 const MAX_LAT = 85.05112878;
 const DEFAULT_CENTER = [31.2304, 121.4737];
@@ -19,11 +20,14 @@ const OWNER_COLORS = {
 
 const ownerOrder = ["rivalA", "rivalB", "rivalC"];
 
-let map;
-let territoryLayer;
-let gridLayer;
-let pathLayer;
-let playerMarker;
+let map = null;
+let gridLayer = null;
+let cellLayer = null;
+let pathLayer = null;
+let gridOverlays = [];
+let cellOverlayCache = new Map();
+let pathOverlay = null;
+let playerMarker = null;
 let watchId = null;
 let autoTimer = null;
 let autoBearing = 55;
@@ -55,6 +59,11 @@ const els = {
 init();
 
 function init() {
+  bindEvents();
+  syncCellSizeButtons();
+  syncPanelState();
+  createIcons();
+
   map = L.map("map", {
     zoomControl: false,
     preferCanvas: true,
@@ -67,16 +76,15 @@ function init() {
   }).addTo(map);
 
   gridLayer = L.layerGroup().addTo(map);
-  territoryLayer = L.layerGroup().addTo(map);
+  cellLayer = L.layerGroup().addTo(map);
   pathLayer = L.layerGroup().addTo(map);
 
-  bindEvents();
-  syncCellSizeButtons();
-  syncPanelState();
-  createIcons();
+  map.on("click", (event) => movePlayer(event.latlng, "manual"));
+  map.on("moveend zoomend", syncMapView);
 
-  const start = state.lastPoint || { lat: state.map.center[0], lng: state.map.center[1] };
-  setPlayerPosition(start, { pan: false, record: false });
+  if (state.lastPoint) {
+    setPlayerPosition(state.lastPoint, { pan: false, record: false });
+  }
 
   redraw();
   updateStats();
@@ -84,39 +92,24 @@ function init() {
 }
 
 function bindEvents() {
-  map.on("moveend zoomend", () => {
-    const center = map.getCenter();
-    state.map.center = [center.lat, center.lng];
-    state.map.zoom = map.getZoom();
-    saveState();
-    redraw();
-  });
-
-  map.on("click", (event) => {
-    movePlayer(event.latlng, "manual");
-  });
-
   document.querySelectorAll("[data-layer-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       state.layerMode = button.dataset.layerMode;
       document.querySelectorAll("[data-layer-mode]").forEach((item) => {
         item.classList.toggle("is-active", item === button);
       });
+      clearCellOverlays();
       redraw();
       saveState();
     });
   });
 
   document.querySelectorAll("[data-bearing]").forEach((button) => {
-    button.addEventListener("click", () => {
-      stepByBearing(Number(button.dataset.bearing));
-    });
+    button.addEventListener("click", () => stepByBearing(Number(button.dataset.bearing)));
   });
 
   document.querySelectorAll("[data-cell-size]").forEach((button) => {
-    button.addEventListener("click", () => {
-      changeCellSize(Number(button.dataset.cellSize));
-    });
+    button.addEventListener("click", () => changeCellSize(Number(button.dataset.cellSize)));
   });
 
   els.gpsButton.addEventListener("click", toggleGps);
@@ -137,28 +130,9 @@ function createIcons() {
   }
 }
 
-function syncPanelState() {
-  els.controlPanel.classList.toggle("is-collapsed", state.panelCollapsed);
-  els.panelToggleButton.setAttribute("aria-expanded", String(!state.panelCollapsed));
-  els.panelToggleButton.setAttribute(
-    "title",
-    state.panelCollapsed ? "打开操作面板" : "收起操作面板",
-  );
-  els.panelToggleButton.innerHTML = state.panelCollapsed
-    ? '<i data-lucide="sliders-horizontal"></i><span>面板</span>'
-    : '<i data-lucide="panel-bottom-close"></i><span>收起</span>';
-  createIcons();
-}
-
-function togglePanel() {
-  state.panelCollapsed = !state.panelCollapsed;
-  syncPanelState();
-  saveState();
-}
-
 function loadState() {
   const fallback = {
-    version: 1,
+    version: 3,
     cellSize: 80,
     layerMode: "territory",
     map: { center: DEFAULT_CENTER, zoom: 15 },
@@ -171,7 +145,8 @@ function loadState() {
   };
 
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY) ||
+      LEGACY_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
     return {
@@ -200,150 +175,286 @@ function setLocationText(text) {
   els.locationText.textContent = text;
 }
 
+function syncPanelState() {
+  els.controlPanel.classList.toggle("is-collapsed", state.panelCollapsed);
+  els.panelToggleButton.setAttribute("aria-expanded", String(!state.panelCollapsed));
+  els.panelToggleButton.setAttribute(
+    "title",
+    state.panelCollapsed ? "打开操作面板" : "收起操作面板",
+  );
+  els.panelToggleButton.innerHTML = state.panelCollapsed
+    ? '<i data-lucide="sliders-horizontal"></i><span>面板</span>'
+    : '<i data-lucide="panel-bottom-close"></i><span>收起</span>';
+  createIcons();
+}
+
+function togglePanel() {
+  state.panelCollapsed = !state.panelCollapsed;
+  syncPanelState();
+  saveState();
+}
+
+function syncMapView() {
+  if (!map) return;
+  const center = map.getCenter();
+  state.map.center = [center.lat, center.lng];
+  state.map.zoom = map.getZoom();
+  saveState();
+  redraw();
+}
+
+function ensureMapReady() {
+  if (map) return true;
+  setStatus("地图还在加载");
+  return false;
+}
+
 function clampLat(lat) {
   return Math.max(-MAX_LAT, Math.min(MAX_LAT, lat));
 }
 
 function project(lat, lng) {
   const safeLat = clampLat(lat);
-  const x = EARTH_RADIUS * lng * Math.PI / 180;
-  const y = EARTH_RADIUS * Math.log(Math.tan(Math.PI / 4 + safeLat * Math.PI / 360));
-  return { x, y };
+  return {
+    x: EARTH_RADIUS * lng * Math.PI / 180,
+    y: EARTH_RADIUS * Math.log(Math.tan(Math.PI / 4 + safeLat * Math.PI / 360)),
+  };
 }
 
 function unproject(x, y) {
-  const lng = x / EARTH_RADIUS * 180 / Math.PI;
-  const lat = (2 * Math.atan(Math.exp(y / EARTH_RADIUS)) - Math.PI / 2) * 180 / Math.PI;
-  return { lat, lng };
+  return {
+    lng: x / EARTH_RADIUS * 180 / Math.PI,
+    lat: (2 * Math.atan(Math.exp(y / EARTH_RADIUS)) - Math.PI / 2) * 180 / Math.PI,
+  };
+}
+
+function hexRadius() {
+  return hexRadiusFor(state.cellSize);
+}
+
+function hexRadiusFor(size) {
+  return size / Math.sqrt(3);
+}
+
+function axialFromMeters(point) {
+  const size = hexRadius();
+  return {
+    q: (Math.sqrt(3) / 3 * point.x - point.y / 3) / size,
+    r: (2 / 3 * point.y) / size,
+  };
+}
+
+function roundAxial(q, r) {
+  let x = q;
+  let z = r;
+  let y = -x - z;
+  let rx = Math.round(x);
+  let ry = Math.round(y);
+  let rz = Math.round(z);
+  const xDiff = Math.abs(rx - x);
+  const yDiff = Math.abs(ry - y);
+  const zDiff = Math.abs(rz - z);
+
+  if (xDiff > yDiff && xDiff > zDiff) {
+    rx = -ry - rz;
+  } else if (yDiff > zDiff) {
+    ry = -rx - rz;
+  } else {
+    rz = -rx - ry;
+  }
+
+  return { q: rx, r: rz };
+}
+
+function metersFromAxial(q, r, cellSize = state.cellSize) {
+  const size = hexRadiusFor(cellSize);
+  return {
+    x: size * Math.sqrt(3) * (q + r / 2),
+    y: size * 1.5 * r,
+  };
 }
 
 function cellFromLatLng(lat, lng) {
-  const point = project(lat, lng);
-  const x = Math.floor(point.x / state.cellSize);
-  const y = Math.floor(point.y / state.cellSize);
+  const fractional = axialFromMeters(project(lat, lng));
+  const axial = roundAxial(fractional.q, fractional.r);
   return {
-    key: `${state.cellSize}:${x}:${y}`,
-    x,
-    y,
-    size: state.cellSize,
+    key: `hex:${state.cellSize}:${axial.q}:${axial.r}`,
+    q: axial.q,
+    r: axial.r,
   };
 }
 
 function parseCellKey(key) {
-  const [size, x, y] = key.split(":").map(Number);
-  return { size, x, y };
-}
-
-function cellPolygon(key) {
-  const cell = parseCellKey(key);
-  const minX = cell.x * cell.size;
-  const minY = cell.y * cell.size;
-  const maxX = minX + cell.size;
-  const maxY = minY + cell.size;
-  const sw = unproject(minX, minY);
-  const se = unproject(maxX, minY);
-  const ne = unproject(maxX, maxY);
-  const nw = unproject(minX, maxY);
-  return [
-    [sw.lat, sw.lng],
-    [se.lat, se.lng],
-    [ne.lat, ne.lng],
-    [nw.lat, nw.lng],
-  ];
+  const [, size, q, r] = key.split(":").map((part, index) => index === 0 ? part : Number(part));
+  return { size, q, r };
 }
 
 function cellCenter(key) {
   const cell = parseCellKey(key);
-  return unproject((cell.x + 0.5) * cell.size, (cell.y + 0.5) * cell.size);
+  const meters = metersFromAxial(cell.q, cell.r, cell.size);
+  return unproject(meters.x, meters.y);
+}
+
+function cellPolygon(key) {
+  const cell = parseCellKey(key);
+  const center = metersFromAxial(cell.q, cell.r, cell.size);
+  const size = hexRadiusFor(cell.size);
+
+  return Array.from({ length: 6 }, (_, index) => {
+    const angle = Math.PI / 180 * (60 * index - 30);
+    const point = unproject(
+      center.x + size * Math.cos(angle),
+      center.y + size * Math.sin(angle),
+    );
+    return [point.lat, point.lng];
+  });
 }
 
 function visibleCellKeys() {
-  const bounds = map.getBounds().pad(0.05);
-  const sw = project(bounds.getSouth(), bounds.getWest());
-  const ne = project(bounds.getNorth(), bounds.getEast());
-  const minX = Math.floor(Math.min(sw.x, ne.x) / state.cellSize) - 1;
-  const maxX = Math.floor(Math.max(sw.x, ne.x) / state.cellSize) + 1;
-  const minY = Math.floor(Math.min(sw.y, ne.y) / state.cellSize) - 1;
-  const maxY = Math.floor(Math.max(sw.y, ne.y) / state.cellSize) + 1;
-  const total = (maxX - minX + 1) * (maxY - minY + 1);
+  if (!map) return [];
+  const bounds = map.getBounds();
+  const sw = bounds.getSouthWest();
+  const ne = bounds.getNorthEast();
+  const corners = [
+    project(sw.lat, sw.lng),
+    project(sw.lat, ne.lng),
+    project(ne.lat, ne.lng),
+    project(ne.lat, sw.lng),
+  ].map(axialFromMeters);
+  const minQ = Math.floor(Math.min(...corners.map((item) => item.q))) - 3;
+  const maxQ = Math.ceil(Math.max(...corners.map((item) => item.q))) + 3;
+  const minR = Math.floor(Math.min(...corners.map((item) => item.r))) - 3;
+  const maxR = Math.ceil(Math.max(...corners.map((item) => item.r))) + 3;
+  const total = (maxQ - minQ + 1) * (maxR - minR + 1);
 
-  if (total > 1600) return [];
+  if (total > 1800) return [];
 
   const keys = [];
-  for (let x = minX; x <= maxX; x += 1) {
-    for (let y = minY; y <= maxY; y += 1) {
-      keys.push(`${state.cellSize}:${x}:${y}`);
+  for (let q = minQ; q <= maxQ; q += 1) {
+    for (let r = minR; r <= maxR; r += 1) {
+      keys.push(`hex:${state.cellSize}:${q}:${r}`);
     }
   }
   return keys;
 }
 
 function redraw() {
-  gridLayer.clearLayers();
-  territoryLayer.clearLayers();
-  pathLayer.clearLayers();
-
+  if (!map) return;
   drawGrid();
   drawCells();
   drawPath();
 }
 
 function drawGrid() {
+  gridLayer.clearLayers();
+  gridOverlays = [];
   if (map.getZoom() < 14) return;
 
-  visibleCellKeys().forEach((key) => {
-    L.polygon(cellPolygon(key), {
-      color: "rgba(20, 33, 30, 0.18)",
-      weight: 1,
-      fillOpacity: 0,
-      interactive: false,
-    }).addTo(gridLayer);
-  });
+  gridOverlays = visibleCellKeys().map((key) => L.polygon(cellPolygon(key), {
+    color: "rgba(20, 33, 30, 0.2)",
+    weight: 1,
+    fillOpacity: 0,
+    interactive: false,
+  }).addTo(gridLayer));
 }
 
 function drawCells() {
-  const bounds = map.getBounds().pad(0.25);
   const source = state.layerMode === "footprint" ? state.footprints : state.territory;
+  const visibleKeys = new Set();
 
   Object.entries(source).forEach(([key, cell]) => {
-    if (!isCellVisible(key, bounds)) return;
+    if (!isCellVisible(key)) return;
+    visibleKeys.add(key);
+    upsertCellOverlay(key, cell);
+  });
 
-    const isFootprint = state.layerMode === "footprint";
-    const owner = isFootprint ? "me" : cell.owner;
-    L.polygon(cellPolygon(key), {
-      color: owner === "me" ? "rgba(8, 119, 85, 0.9)" : "rgba(20, 33, 30, 0.42)",
-      weight: owner === "me" ? 1.5 : 1,
-      fillColor: OWNER_COLORS[owner] || OWNER_COLORS.me,
-      fillOpacity: isFootprint ? 0.34 : owner === "me" ? 0.48 : 0.4,
-      interactive: false,
-    }).addTo(territoryLayer);
+  cellOverlayCache.forEach((entry, key) => {
+    if (visibleKeys.has(key)) return;
+    cellLayer.removeLayer(entry.overlay);
+    cellOverlayCache.delete(key);
   });
 }
 
 function drawPath() {
-  if (state.path.length < 2) return;
-  const bounds = map.getBounds().pad(0.35);
-  const points = state.path
-    .filter((point) => bounds.contains([point.lat, point.lng]))
-    .map((point) => [point.lat, point.lng]);
+  const path = state.path.map((point) => [point.lat, point.lng]);
 
-  if (points.length < 2) return;
+  if (path.length < 2) {
+    if (pathOverlay) {
+      pathLayer.removeLayer(pathOverlay);
+      pathOverlay = null;
+    }
+    return;
+  }
 
-  L.polyline(points, {
+  if (pathOverlay) {
+    pathOverlay.setLatLngs(path);
+    return;
+  }
+
+  pathOverlay = L.polyline(path, {
     color: "#087755",
-    weight: 4,
+    weight: 5,
     opacity: 0.72,
     lineCap: "round",
+    lineJoin: "round",
     interactive: false,
   }).addTo(pathLayer);
 }
 
-function isCellVisible(key, bounds) {
+function upsertCellOverlay(key, cell) {
+  const style = cellOverlayStyle(cell);
+  const existing = cellOverlayCache.get(key);
+
+  if (existing && existing.mode === state.layerMode && existing.owner === style.owner) {
+    return;
+  }
+
+  if (existing) {
+    existing.overlay.setStyle(style.options);
+    existing.mode = state.layerMode;
+    existing.owner = style.owner;
+    return;
+  }
+
+  const overlay = L.polygon(cellPolygon(key), {
+    ...style.options,
+    interactive: false,
+  }).addTo(cellLayer);
+  cellOverlayCache.set(key, {
+    overlay,
+    mode: state.layerMode,
+    owner: style.owner,
+  });
+}
+
+function cellOverlayStyle(cell) {
+  const isFootprint = state.layerMode === "footprint";
+  const owner = isFootprint ? "me" : cell.owner;
+  return {
+    owner,
+    options: {
+      color: owner === "me" ? "rgba(8, 119, 85, 0.9)" : "rgba(20, 33, 30, 0.42)",
+      weight: owner === "me" ? 2 : 1,
+      fillColor: OWNER_COLORS[owner] || OWNER_COLORS.me,
+      fillOpacity: isFootprint ? 0.34 : owner === "me" ? 0.5 : 0.42,
+    },
+  };
+}
+
+function clearCellOverlays() {
+  cellOverlayCache.forEach((entry) => cellLayer.removeLayer(entry.overlay));
+  cellOverlayCache.clear();
+}
+
+function isCellVisible(key) {
+  if (!map) return false;
+  const bounds = map.getBounds().pad(0.15);
   const center = cellCenter(key);
   return bounds.contains([center.lat, center.lng]);
 }
 
 function setPlayerPosition(latlng, options = {}) {
+  if (!ensureMapReady()) return;
   const point = {
     lat: Number(latlng.lat),
     lng: Number(latlng.lng),
@@ -365,7 +476,7 @@ function setPlayerPosition(latlng, options = {}) {
   lastPoint = point;
 
   if (options.pan) {
-    map.panTo([point.lat, point.lng], { animate: true, duration: 0.35 });
+    map.panTo([point.lat, point.lng], { animate: true, duration: 0.28 });
   }
 
   if (options.record !== false) {
@@ -374,12 +485,14 @@ function setPlayerPosition(latlng, options = {}) {
 }
 
 function movePlayer(latlng, source) {
+  if (!ensureMapReady()) return;
   const target = { lat: Number(latlng.lat), lng: Number(latlng.lng) };
   const from = hasVisited() ? lastPoint || target : target;
   claimRoute(from, target, source);
   setPlayerPosition(target, { pan: true, source });
   saveState();
-  redraw();
+  drawCells();
+  drawPath();
   updateStats();
   setStatus(statusForSource(source));
 }
@@ -391,17 +504,17 @@ function hasVisited() {
 function statusForSource(source) {
   if (source === "gps") return "GPS 真实定位已计入";
   if (source === "center") return "已染当前地图中心";
+  if (source === "step") return "已移动 1 个六边形";
   return "模拟轨迹已计入";
 }
 
 function claimRoute(from, to, source) {
   const distance = haversine(from, to);
-  const steps = Math.max(1, Math.ceil(distance / Math.max(24, state.cellSize * 0.45)));
+  const steps = Math.max(1, Math.ceil(distance / Math.max(18, state.cellSize * 0.4)));
 
   for (let i = 0; i <= steps; i += 1) {
     const ratio = steps === 0 ? 1 : i / steps;
-    const point = interpolateProjected(from, to, ratio);
-    claimCell(point, source);
+    claimCell(interpolateProjected(from, to, ratio), source);
   }
 }
 
@@ -445,12 +558,39 @@ function appendPath(point, source) {
 }
 
 function stepByBearing(bearing) {
-  const origin = lastPoint || {
-    lat: map.getCenter().lat,
-    lng: map.getCenter().lng,
-  };
-  const target = destination(origin, bearing, Math.max(32, state.cellSize * 0.6));
-  movePlayer(target, "manual");
+  if (!ensureMapReady()) return;
+  const origin = lastPoint || getMapCenterPoint();
+  const currentCell = cellFromLatLng(origin.lat, origin.lng);
+  const currentCenter = cellCenter(currentCell.key);
+  const probePoint = destination(currentCenter, bearing, state.cellSize);
+  const nextCell = cellFromLatLng(probePoint.lat, probePoint.lng);
+  const targetKey = nextCell.key === currentCell.key
+    ? neighborCellKey(currentCell, bearing)
+    : nextCell.key;
+
+  movePlayer(cellCenter(targetKey), "step");
+}
+
+function neighborCellKey(cell, bearing) {
+  const directions = [
+    { q: 0, r: 1, bearing: 30 },
+    { q: 1, r: 0, bearing: 90 },
+    { q: 1, r: -1, bearing: 150 },
+    { q: 0, r: -1, bearing: 210 },
+    { q: -1, r: 0, bearing: 270 },
+    { q: -1, r: 1, bearing: 330 },
+  ];
+  const direction = directions.reduce((best, item) => {
+    const diff = angularDistance(bearing, item.bearing);
+    return diff < best.diff ? { ...item, diff } : best;
+  }, { ...directions[0], diff: Infinity });
+
+  return `hex:${state.cellSize}:${cell.q + direction.q}:${cell.r + direction.r}`;
+}
+
+function angularDistance(a, b) {
+  const diff = Math.abs(((a - b + 540) % 360) - 180);
+  return diff;
 }
 
 function toggleAutoWalk() {
@@ -463,12 +603,11 @@ function toggleAutoWalk() {
     return;
   }
 
+  if (!ensureMapReady()) return;
+
   autoTimer = window.setInterval(() => {
     autoBearing = (autoBearing + 22 + Math.sin(Date.now() / 2400) * 14) % 360;
-    const origin = lastPoint || {
-      lat: map.getCenter().lat,
-      lng: map.getCenter().lng,
-    };
+    const origin = lastPoint || getMapCenterPoint();
     movePlayer(destination(origin, autoBearing, Math.max(24, state.cellSize * 0.52)), "auto");
   }, 900);
 
@@ -572,9 +711,7 @@ async function lookupAddress(point, accuracy) {
   if (now - lastReverseGeocodeAt < 15000) return;
 
   lastReverseGeocodeAt = now;
-  if (reverseGeocodeController) {
-    reverseGeocodeController.abort();
-  }
+  if (reverseGeocodeController) reverseGeocodeController.abort();
 
   reverseGeocodeController = new AbortController();
   const url = new URL("https://nominatim.openstreetmap.org/reverse");
@@ -587,46 +724,30 @@ async function lookupAddress(point, accuracy) {
   try {
     const response = await fetch(url, {
       signal: reverseGeocodeController.signal,
-      headers: {
-        "Accept": "application/json",
-      },
+      headers: { "Accept": "application/json" },
     });
     if (!response.ok) return;
     const data = await response.json();
-    const address = data.display_name || buildAddress(data.address);
-    if (!address) return;
+    if (!data.display_name) return;
     const precision = accuracy ? ` · 误差约 ${Math.round(accuracy)}m` : "";
-    setLocationText(`真实设备定位 · ${address}${precision}`);
+    setLocationText(`真实设备定位 · ${data.display_name}${precision}`);
   } catch (error) {
-    if (error.name !== "AbortError") {
-      updateGpsLocationText(point, accuracy);
-    }
+    if (error.name !== "AbortError") updateGpsLocationText(point, accuracy);
   }
 }
 
-function buildAddress(address = {}) {
-  return [
-    address.city || address.town || address.village || address.county,
-    address.suburb || address.neighbourhood,
-    address.road,
-    address.house_number,
-  ].filter(Boolean).join(" ");
-}
-
-function formatCoordinate(value) {
-  return Number(value).toFixed(6);
-}
-
 function claimMapCenter() {
-  movePlayer(map.getCenter(), "center");
+  if (!ensureMapReady()) return;
+  movePlayer(getMapCenterPoint(), "center");
 }
 
 function centerOnPlayer() {
+  if (!ensureMapReady()) return;
   if (!lastPoint) {
     setStatus("暂无玩家位置");
     return;
   }
-  map.panTo([lastPoint.lat, lastPoint.lng], { animate: true, duration: 0.35 });
+  map.panTo([lastPoint.lat, lastPoint.lng], { animate: true, duration: 0.28 });
   setStatus("已回到当前位置");
 }
 
@@ -638,14 +759,16 @@ function changeCellSize(size) {
   state.footprints = {};
   state.path = [];
   state.stats.captures = 0;
-  const point = lastPoint || { lat: map.getCenter().lat, lng: map.getCenter().lng };
-  claimRoute(point, point, "manual");
-  appendPath(point, "manual");
+  clearCellOverlays();
+  if (pathOverlay) {
+    pathLayer.removeLayer(pathOverlay);
+    pathOverlay = null;
+  }
   syncCellSizeButtons();
   saveState();
   redraw();
   updateStats();
-  setStatus(`格子已切换为 ${size}m`);
+  setStatus(`六边形已切换为 ${size}m`);
 }
 
 function syncCellSizeButtons() {
@@ -659,70 +782,68 @@ function syncCellSizeButtons() {
 }
 
 function seedRivals() {
-  const center = cellFromLatLng(map.getCenter().lat, map.getCenter().lng);
-  const playerCell = cellFromLatLng(lastPoint?.lat || map.getCenter().lat, lastPoint?.lng || map.getCenter().lng);
+  if (!ensureMapReady()) return;
+  const centerPoint = lastPoint || getMapCenterPoint();
+  const center = cellFromLatLng(centerPoint.lat, centerPoint.lng);
   const radius = 15;
   const clusters = Array.from({ length: 8 }, (_, index) => ({
-    x: center.x + randomInt(-radius, radius),
-    y: center.y + randomInt(-radius, radius),
+    q: center.q + randomInt(-radius, radius),
+    r: center.r + randomInt(-radius, radius),
     owner: ownerOrder[index % ownerOrder.length],
     reach: randomInt(3, 6),
   }));
   let seeded = 0;
 
   clusters.forEach((cluster) => {
-    for (let dx = -cluster.reach; dx <= cluster.reach; dx += 1) {
-      for (let dy = -cluster.reach; dy <= cluster.reach; dy += 1) {
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        if (distance > cluster.reach || Math.random() < 0.22) continue;
-
-        const key = `${state.cellSize}:${cluster.x + dx}:${cluster.y + dy}`;
+    for (let dq = -cluster.reach; dq <= cluster.reach; dq += 1) {
+      for (let dr = -cluster.reach; dr <= cluster.reach; dr += 1) {
+        if (hexDistance(0, 0, dq, dr) > cluster.reach || Math.random() < 0.22) continue;
+        const key = `hex:${state.cellSize}:${cluster.q + dq}:${cluster.r + dr}`;
         if (state.footprints[key]) continue;
-
-        state.territory[key] = {
-          owner: cluster.owner,
-          firstAt: Date.now(),
-          lastAt: Date.now(),
-          visits: 1,
-          source: "rival-seed",
-        };
+        state.territory[key] = createRivalCell(cluster.owner);
         seeded += 1;
       }
     }
   });
 
-  const nearbyCells = [
-    { dx: 1, dy: 0, owner: "rivalA" },
-    { dx: 2, dy: 0, owner: "rivalA" },
-    { dx: 3, dy: 0, owner: "rivalB" },
-    { dx: 0, dy: 1, owner: "rivalC" },
-    { dx: 0, dy: 2, owner: "rivalC" },
-    { dx: -1, dy: 0, owner: "rivalB" },
-  ];
-
-  nearbyCells.forEach((nearby) => {
-    const key = `${state.cellSize}:${playerCell.x + nearby.dx}:${playerCell.y + nearby.dy}`;
-
-    state.territory[key] = {
-      owner: nearby.owner,
-      firstAt: Date.now(),
-      lastAt: Date.now(),
-      visits: 1,
-      source: "nearby-rival-seed",
-    };
+  [
+    { dq: 1, dr: 0, owner: "rivalA" },
+    { dq: 2, dr: 0, owner: "rivalA" },
+    { dq: 3, dr: 0, owner: "rivalB" },
+    { dq: 0, dr: 1, owner: "rivalC" },
+    { dq: 0, dr: 2, owner: "rivalC" },
+    { dq: -1, dr: 0, owner: "rivalB" },
+  ].forEach((nearby) => {
+    const key = `hex:${state.cellSize}:${center.q + nearby.dq}:${center.r + nearby.dr}`;
+    state.territory[key] = createRivalCell(nearby.owner);
     seeded += 1;
   });
 
   saveState();
-  redraw();
+  drawCells();
   updateStats();
-  setStatus(`已生成 ${seeded} 个对手格`);
+  setStatus(`已生成 ${seeded} 个对手六边形`);
+}
+
+function createRivalCell(owner) {
+  const now = Date.now();
+  return {
+    owner,
+    firstAt: now,
+    lastAt: now,
+    visits: 1,
+    source: "rival-seed",
+  };
+}
+
+function hexDistance(q1, r1, q2, r2) {
+  return (Math.abs(q1 - q2) + Math.abs(q1 + r1 - q2 - r2) + Math.abs(r1 - r2)) / 2;
 }
 
 function updateStats() {
   const owned = Object.values(state.territory).filter((cell) => cell.owner === "me").length;
   const footprints = Object.keys(state.footprints).length;
-  const approximateArea = owned * state.cellSize * state.cellSize;
+  const approximateArea = owned * hexArea();
 
   els.ownedCount.textContent = compactNumber(owned);
   els.footprintCount.textContent = compactNumber(footprints);
@@ -735,7 +856,7 @@ function exportSave() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `city-walk-demo-${new Date().toISOString().slice(0, 10)}.json`;
+  link.download = `city-walk-leaflet-hex-${new Date().toISOString().slice(0, 10)}.json`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -758,16 +879,31 @@ function resetSave() {
     map.removeLayer(playerMarker);
     playerMarker = null;
   }
+  if (pathOverlay) {
+    pathLayer.removeLayer(pathOverlay);
+    pathOverlay = null;
+  }
+  clearCellOverlays();
 
   saveState();
   redraw();
   updateStats();
   setLocationText("未启用 GPS");
-  setStatus("已清空全部格子和路线");
+  setStatus("已清空全部六边形和路线");
+}
+
+function getMapCenterPoint() {
+  const center = map.getCenter();
+  return { lat: center.lat, lng: center.lng };
+}
+
+function hexArea() {
+  const size = hexRadius();
+  return 3 * Math.sqrt(3) / 2 * size * size;
 }
 
 function compactNumber(value) {
-  if (value < 1000) return String(value);
+  if (value < 1000) return String(Math.round(value));
   if (value < 10000) return `${(value / 1000).toFixed(1)}k`;
   return `${Math.round(value / 1000)}k`;
 }
@@ -816,4 +952,8 @@ function destination(origin, bearingDegrees, distanceMeters) {
     lat: lat2 * 180 / Math.PI,
     lng: ((lng2 * 180 / Math.PI + 540) % 360) - 180,
   };
+}
+
+function formatCoordinate(value) {
+  return Number(value).toFixed(6);
 }
